@@ -20,13 +20,16 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-
+from sklearn.preprocessing import MinMaxScaler
 
 data_path = Path("../")
 output_path = Path("../output/")
 
 
 # conda activate mlGpu2
+
+
+
 
 class FC_model(nn.Module):
     def __init__(self, in_shape=None, out_shape=None):
@@ -41,18 +44,22 @@ class FC_model(nn.Module):
         
     def forward(self, x):
     
-        print(f"Input shape: {x.shape}") 
+        #print(f"Input shape: {x.shape}") 
         x = F.relu(self.fc1(x))
-        print(f"FC1 shape: {x.shape}")
+        #print(f"FC1 shape: {x.shape}")
         x = F.relu(self.fc2(x))
-        print(f"FC2 shape: {x.shape}")
+        #print(f"FC2 shape: {x.shape}")
         x = self.fc3(x)
-        print(f"FC3 shape: {x.shape}")
+        #print(f"FC3 shape: {x.shape}")
         
         return(x)
 
 
 # iteratively train the model (args, Net(), cpu/gpu, how to load trining data, optimizer, number of epochs/iterations) - first epoch index is 1
+
+
+
+
 def train(args, model, device, train_loader, optimizer, epoch, loss_fxn, loss_dict):
     # set the model in training mode: Docs>torch.nn>Module. Training mode affects some modules differently than eval() (used for validation/testing), i.e. Dropout, where no channels/nodes would be zeroed out during testing.
     model.train()
@@ -78,6 +85,10 @@ def train(args, model, device, train_loader, optimizer, epoch, loss_fxn, loss_di
 
 
 # validate the trained model on the val set 
+
+
+
+
 def val(model, device, val_loader, loss_fxn, loss_dict):
     model.eval()  # enter evaluation mode (no Dropout, batchnorm, others?)
     # initialize vars
@@ -100,10 +111,17 @@ def val(model, device, val_loader, loss_fxn, loss_dict):
     print('\nValidation set: Average loss: {:.6f}\n'.format(val_loss))
 
 # save a checkpoint at the last epoch with minimum val loss    
+
+
+
+
 def save_checkpoint(state, is_best, filename=str(output_path / 'GEOS-CF_checkpoint.pth.tar')):
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, str(output_path / 'GEOS-CF_best.pth.tar'))
+
+
+
 
 
 def main(train_x, train_y, val_x, val_y, args, kwargs):
@@ -177,7 +195,7 @@ def main(train_x, train_y, val_x, val_y, args, kwargs):
         is_best = min_val_loss <= val_loss[-1]
         save_checkpoint({
             'epoch': epoch + 1,
-            'state_dict': Gmodel.state_dict(),
+            'state_dict': model.state_dict(),
             'min_val_loss': min_val_loss,
             'optimizer' : optimizer.state_dict()
         }, is_best)
@@ -205,56 +223,56 @@ def main(train_x, train_y, val_x, val_y, args, kwargs):
     
 
 
+
+
+
 def get_data(fls=[], test=False):
-
+    # 0) load & pick
     df = pd.concat([pd.read_parquet(f) for f in fls], ignore_index=True)
-    
-    feat_list = ["Jval", "Met", "ConcBeforeChem", "AeroArea"]
-    pattern = "|".join(feat_list)
-    features_df = df.filter(regex=pattern)
-    targets_df = df["ConcAfterChem_CO"]
-    
-    print(features_df.head())
-    print(targets_df.head())
-    
+    feat_list   = ["Jval", "Met", "ConcBeforeChem", "AeroArea"]
+    pattern     = "|".join(feat_list)
+    features_df = df.filter(regex=pattern)      # (N,66)
+    targets_df  = df["ConcAfterChem_CO"]        # (N,)
+
     if test:
-        features = torch.tensor(features.values, dtype=torch.float32)
-        targets = torch.tensor(targets.values, dtype=torch.float32)
-        return features, targets
-    
-    else:
-        # 1. Split data
-        X_train_df, X_val_df, y_train_df, y_val_df = train_test_split(
-            features_df, targets_df, test_size=0.2, random_state=42
-        )
+        X = torch.tensor(features_df.values, dtype=torch.float32)
+        y = torch.tensor(targets_df.values,  dtype=torch.float32).unsqueeze(1)
+        return X, y
 
-        # 2. Compute normalization stats on training data only
-        X_min = X_train_df.min()
-        X_max = X_train_df.max()
+    # 1) split
+    X_train_df, X_val_df, y_train_df, y_val_df = train_test_split(
+        features_df, targets_df, test_size=0.2, random_state=42
+    )
 
-        # 3. Apply Min-Max scaling
-        X_train_scaled = (X_train_df - X_min) / (X_max - X_min)
-        X_val_scaled = (X_val_df - X_min) / (X_max - X_min)  # Use train stats!
+    # 2) scale X
+    scalerX     = MinMaxScaler()
+    X_train_arr = scalerX.fit_transform(X_train_df)
+    X_val_arr   = scalerX.transform(  X_val_df  )
 
-        # 4. Convert to PyTorch tensors
-        X_train = torch.tensor(X_train_scaled.values, dtype=torch.float32)
-        X_val   = torch.tensor(X_val_scaled.values, dtype=torch.float32)
+    # 3) scale Y (reshape to 2D!)
+    scalerY      = MinMaxScaler()
+    y_train_arr  = scalerY.fit_transform(y_train_df.values.reshape(-1,1))
+    y_val_arr    = scalerY.transform(  y_val_df.values.reshape(-1,1))
 
-        y_train = torch.tensor(y_train_df.values, dtype=torch.float32)
-        y_val   = torch.tensor(y_val_df.values, dtype=torch.float32)
-        
-        return X_train, y_train, X_val, y_val
+    # sanity‐check:
+    print("Y train min/max:", y_train_arr.min(), y_train_arr.max())  # → 0.0, 1.0
 
+    # 4) to torch (arrays are already shape (n,1))
+    X_train = torch.tensor(X_train_arr, dtype=torch.float32)
+    X_val   = torch.tensor(X_val_arr,   dtype=torch.float32)
+    y_train = torch.tensor(y_train_arr, dtype=torch.float32)
+    y_val   = torch.tensor(y_val_arr,   dtype=torch.float32)
 
-
-
-
-
+    return X_train, y_train, X_val, y_val
 
 
 
 train_model = True
 test_model = True
+
+
+
+
 
 if train_model:
     # Training settings
@@ -264,7 +282,7 @@ if train_model:
                         help='input batch size for training')  # if the batch size is larger than 1, we get an OOM at the first conv
     parser.add_argument('--val-batch-size', type=int, default=3200, metavar='N',
                         help='input batch size for testing/validation')
-    parser.add_argument('--epochs', type=int, default=2, metavar='N',
+    parser.add_argument('--epochs', type=int, default=20, metavar='N',
                         help='number of epochs to train ')
     parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -300,31 +318,21 @@ if train_model:
                        'shuffle': True},
                      )
 
-
-
     
     # read files specified for training
     with open("training_filenames.txt", "r") as f:
         train_fls = [line.strip() for line in f]
     #print(train_fls)
+    #train_fls=train_fls[0:1]
         
     train_X, train_Y, val_X, val_Y = get_data(fls=train_fls, test=False)
     
-    print(train_X.shape, val_X.shape)
+    #print(train_X.shape, val_X.shape)
+
+    for t in (train_X, train_Y, val_X, val_Y): 
+        t[torch.isnan(t)] = -0.99
     
     # prepare dataloader, train, and validate
     main(train_X, train_Y, val_X, val_Y, args, kwargs)
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
     
     
